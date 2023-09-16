@@ -73,7 +73,7 @@ class MultiviewNet(nn.Module):
     self.depth_cands = torch.arange(0, ndepths, requires_grad=False).reshape(1, -1).to(
             torch.float32) * self.depth_interval + self.depth_min
     self.matchingFeature = psm_feature_extraction()
-    self.semanticFeature = ResnetEncoder(resnet, "pretrained")  # the features after bn and relu
+    self.semanticFeature = ResnetEncoder(resnet, True)  # the features after bn and relu
     self.multiviewBackbone = MultiviewBackbone(hparams)
     self.stage_infos = {
             "stage1": {
