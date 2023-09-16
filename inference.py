@@ -23,8 +23,8 @@ import glob
 
 ckpt_path = '/home/siheng/dha/views=5-epoch=100-step=734169.ckpt'
 model_file = '/home/siheng/dha/MVTrans/model/multiview_net.py'
-hparam_file= '/home/siheng/dha/MVTrans/model/config/net_config_blender_multiview_2view_eval.txt'
 model_name = 'res_fpn'
+hparam_file= '/home/siheng/dha/MVTrans/model/config/net_config_blender_multiview_2view_eval.txt'
 model_path = (model_file)
 
 class Detection:
@@ -41,6 +41,25 @@ def prune_state_dict(state_dict):
         state_dict[key[6:]] = state_dict.pop(key)
     return state_dict
 
+model_path = (model_file)
+
+parser = argparse.ArgumentParser(fromfile_prefix_chars='@')
+common.add_train_args(parser)
+hparams = parser.parse_args(['@config/net_config_blender_multiview_2view_eval.txt'])
+
+print('Using model class from:', model_path)
+net_module = SourceFileLoader(model_name, str(model_path)).load_module()
+net_attr = getattr(net_module, model_name)
+model = net_attr(hparams)
+model.apply(default_init)
+
+print('Restoring from checkpoint:', ckpt_path)
+state_dict = torch.load(ckpt_path)['state_dict']
+state_dict = prune_state_dict(state_dict)
+model.load_state_dict(state_dict)
+
+model.cuda()
+model.eval()
 
 # load data from dataloader
 # val_ds = datapoint.make_dataset(hparams.val_path, dataset = 'blender', multiview = True, num_multiview = hparams.num_multiview, num_samples = hparams.num_samples)
@@ -87,6 +106,7 @@ def prep_image_set_and_poses(one_image_set, json_filename):
 
     all_images = []
     all_transforms = []
+    image_name = os.path.basename(one_image_set[0][:-6])
     for image in one_image_set:
         for frame in json_data.get("frames", []):
                 if frame.get("file_path") == os.path.basename(image[:-6]):
@@ -105,7 +125,7 @@ def prep_image_set_and_poses(one_image_set, json_filename):
     image = torch.from_numpy(stacked_images)
     image = image.unsqueeze(0)
     assert(image.shape == (1, 5,3,800,800))
-    return image, transforms
+    return image_name, image, transforms
 
 def read_intrinsics(file):
     with open(file, 'r') as file:
@@ -119,105 +139,92 @@ def construct_intrinsics(f_x, f_y, c_x, c_y):
                     [[[f_x,   0.0000, c_x],
                     [  0.0000, f_y, c_y],
                     [  0.0000,   0.0000,   1.0000]]]
-            )
+            ).float()
     ]
     return camera_intrinsics
 
-def main(folder_path, json_fp):
-    model_path = (model_file)
-
-    parser = argparse.ArgumentParser(fromfile_prefix_chars='@')
-    common.add_train_args(parser)
-    hparams = parser.parse_args(['@config/net_config_blender_multiview_2view_eval.txt'])
-
-    print('Using model class from:', model_path)
-    net_module = SourceFileLoader(model_name, str(model_path)).load_module()
-    net_attr = getattr(net_module, model_name)
-    model = net_attr(hparams)
-    model.apply(default_init)
-
-    print('Restoring from checkpoint:', ckpt_path)
-    state_dict = torch.load(ckpt_path)['state_dict']
-    state_dict = prune_state_dict(state_dict)
-    model.load_state_dict(state_dict)
-
-    model.cuda()
-    model.eval()
-    torch.cuda.empty_cache()
-
+def main(folder_path, output_folder, json_fp):
     f_x, f_y, c_x, c_y = read_intrinsics(json_fp)
     camera_intrinsics = construct_intrinsics(f_x, f_y, c_x, c_y)
     l_images = get_fn_from_validation_folder(folder_path)
+    if not (os.path.exists(output_folder)):
+        os.mkdir(output_folder)
+
     for image_set in l_images:     
-        image, pose = prep_image_set_and_poses(image_set, json_fp)
+        image_name, image, pose = prep_image_set_and_poses(image_set, json_fp)
         seg_output, depth_output, small_depth_output, pose_outputs, box_outputs, keypoint_outputs = model.forward(
             imgs = image.to("cuda"), cam_poses = pose.to("cuda"), cam_intr = camera_intrinsics, mode = 'val'
+            # imgs = image, cam_poses = pose, cam_intr = camera_intrinsics, mode = 'val'
         )
         with torch.no_grad():
             depth_output.convert_to_numpy_from_torch()
+            np.save(os.path.join(output_folder, image_name), depth_output)
             # save depth_output.depth_pred to numpy array
     else:
             raise ValueError(f'Network type not supported: {hparams.network_type}')
 
-camera_model = camera.BlenderCamera()
-with torch.no_grad():
+# camera_model = camera.BlenderCamera()
+# with torch.no_grad():
 
-    left_image_np = extract_left_numpy_img(image[0], mode = 'multiview')
+#     left_image_np = extract_left_numpy_img(image[0], mode = 'multiview')
         
-    depth_vis = depth_output.get_visualization_img(np.copy(left_image_np))
+#     depth_vis = depth_output.get_visualization_img(np.copy(left_image_np))
 
-    # depth_target[0].depth_pred=np.expand_dims(depth_target[0].depth_pred, axis=0)
-    # depth_target[0].convert_to_torch_from_numpy()
-    # gt_depth_vis = depth_target[0].get_visualization_img(np.copy(left_image_np))
+#     # depth_target[0].depth_pred=np.expand_dims(depth_target[0].depth_pred, axis=0)
+#     # depth_target[0].convert_to_torch_from_numpy()
+#     # gt_depth_vis = depth_target[0].get_visualization_img(np.copy(left_image_np))
 
-    seg_vis = seg_output.get_visualization_img(np.copy(left_image_np))
-    # seg_target[0].convert_to_numpy_from_torch()
-    # gt_seg_vis = draw_segmentation_mask_gt(np.copy(left_image_np), seg_target[0].seg_pred)
+#     seg_vis = seg_output.get_visualization_img(np.copy(left_image_np))
+#     # seg_target[0].convert_to_numpy_from_torch()
+#     # gt_seg_vis = draw_segmentation_mask_gt(np.copy(left_image_np), seg_target[0].seg_pred)
 
-    # c_img = cv2.cvtColor(np.array(left_image_np), cv2.COLOR_BGR2RGB)
-    pose_vis = pose_outputs.get_visualization_img(np.copy(left_image_np), camera_model=camera_model)
-    # gt_pose_vis = pose_targets[0].get_visualization_img_gt(np.copy(left_image_np), camera_model=camera_model)
+#     # c_img = cv2.cvtColor(np.array(left_image_np), cv2.COLOR_BGR2RGB)
+#     pose_vis = pose_outputs.get_visualization_img(np.copy(left_image_np), camera_model=camera_model)
+#     # gt_pose_vis = pose_targets[0].get_visualization_img_gt(np.copy(left_image_np), camera_model=camera_model)
 
-    # plotting
-    rows = 2
-    columns = 3
-    fig = plt.figure(figsize=(15, 15))
+#     # plotting
+#     rows = 2
+#     columns = 3
+#     fig = plt.figure(figsize=(15, 15))
 
-    # fig.add_subplot(rows, columns, 1)
-    # plt.imshow(gt_seg_vis)
-    # plt.axis('off')
-    # plt.title("gt_seg map")
+#     # fig.add_subplot(rows, columns, 1)
+#     # plt.imshow(gt_seg_vis)
+#     # plt.axis('off')
+#     # plt.title("gt_seg map")
 
-    # fig.add_subplot(rows, columns, 2)
-    # plt.imshow(gt_depth_vis)
-    # plt.axis('off')
-    # plt.title("gt depth map")
+#     # fig.add_subplot(rows, columns, 2)
+#     # plt.imshow(gt_depth_vis)
+#     # plt.axis('off')
+#     # plt.title("gt depth map")
 
-    # fig.add_subplot(rows, columns, 3)
-    # plt.imshow(gt_pose_vis.astype(int))
-    # plt.axis('off')
-    # plt.title("gt pose vis")
+#     # fig.add_subplot(rows, columns, 3)
+#     # plt.imshow(gt_pose_vis.astype(int))
+#     # plt.axis('off')
+#     # plt.title("gt pose vis")
 
-    fig.add_subplot(rows, columns, 4)
-    plt.imshow(seg_vis)
-    plt.axis('off')
-    plt.title("seg map")
+#     fig.add_subplot(rows, columns, 4)
+#     plt.imshow(seg_vis)
+#     plt.axis('off')
+#     plt.title("seg map")
 
-    fig.add_subplot(rows, columns, 5)
-    plt.imshow(depth_vis)
-    plt.axis('off')
-    plt.title("depth map")
+#     fig.add_subplot(rows, columns, 5)
+#     plt.imshow(depth_vis)
+#     plt.axis('off')
+#     plt.title("depth map")
 
-    fig.add_subplot(rows, columns, 6)
-    plt.imshow(pose_vis.astype(int))
-    plt.axis('off')
-    plt.title("pose vis")
-    plt.show()
+#     fig.add_subplot(rows, columns, 6)
+#     plt.imshow(pose_vis.astype(int))
+#     plt.axis('off')
+#     plt.title("pose vis")
+#     plt.show()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('folder_path')
+    parser.add_argument('output_folder') # for numpy
     parser.add_argument('json_path')
     args = parser.parse_args()
-    main(args.folder_path, args.json_path)
+    main(args.folder_path, args.output_folder, args.json_path)
     
+    # folder_path = "/home/siheng/dha/table/batch_1/bowl_rgb/val"
+    # json_fp = "/home/siheng/dha/table/batch_1/bowl_rgb/poses_val.json"
